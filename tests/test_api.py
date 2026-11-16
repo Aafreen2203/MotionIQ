@@ -1,4 +1,6 @@
+import cv2
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 import motioniq.api as api_module
@@ -155,3 +157,61 @@ def test_upload_rejects_unsupported_and_corrupt_files(tmp_path, monkeypatch):
     corrupt = client.post("/api/videos", files={"file": ("clip.mp4", b"not a video", "video/mp4")})
     assert corrupt.status_code == 422
     assert list(tmp_path.iterdir()) == []
+
+
+def test_processed_video_endpoint_serves_h264_with_byte_ranges(tmp_path):
+    source = tmp_path / "range-source.mp4"
+    artifact = tmp_path / "range-source.pose.mp4"
+    writer = cv2.VideoWriter(str(artifact), cv2.VideoWriter_fourcc(*"avc1"), 5, (64, 48))
+    if not writer.isOpened():
+        pytest.skip("OpenCV H.264 encoder unavailable in this environment")
+    for value in range(5):
+        writer.write(np.full((48, 64, 3), value * 30, dtype=np.uint8))
+    writer.release()
+    video_id = "range-video-test"
+    api_module.RESULTS[video_id] = {
+        "video": {"path": str(source)},
+        "processed_video": {"status": "completed", "url": f"/api/videos/{video_id}/processed"},
+    }
+    try:
+        response = client.get(f"/api/videos/{video_id}/processed")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("video/mp4")
+        assert len(response.content) == artifact.stat().st_size
+        capture = cv2.VideoCapture(str(artifact))
+        assert capture.isOpened()
+        assert capture.read()[0]
+        capture.release()
+        ranged = client.get(f"/api/videos/{video_id}/processed", headers={"Range": "bytes=0-1023"})
+        assert ranged.status_code == 206
+        assert ranged.headers["content-range"].startswith("bytes 0-1023/")
+        assert len(ranged.content) == 1024
+    finally:
+        api_module.RESULTS.pop(video_id, None)
+
+
+def test_upload_does_not_advertise_missing_processed_video(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_module, "UPLOAD_DIR", tmp_path)
+
+    def analysis_result(path):
+        return {
+            "video": {"path": str(path), "width": 64, "height": 48, "fps": 5},
+            "segmentation_masks": {},
+            "pose": {"status": "completed", "frames": [], "detected_frames": 0},
+            "segmentation": {"status": "completed"},
+            "overlay": {"status": "available", "url": None},
+            "processed_video": {"status": "completed", "url": None},
+            "segmentation_video": {"status": "completed", "url": None},
+            "movement_measurements": {"status": "not_configured"},
+            "prediction": {"status": "not_configured"},
+            "evaluation": {"status": "not_evaluated"},
+        }
+
+    monkeypatch.setattr(api_module, "analyze_video", analysis_result)
+    response = client.post("/api/videos", files={"file": ("clip.mp4", b"video", "video/mp4")})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["processed_video"]["status"] == "failed"
+    assert body["processed_video"]["url"] is None
+    assert body["segmentation_video"]["status"] == "failed"
+    assert body["segmentation_video"]["url"] is None

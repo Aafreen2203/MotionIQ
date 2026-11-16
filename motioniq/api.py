@@ -82,13 +82,32 @@ async def upload_video(file: UploadFile = File(...)):
     results["video_id"] = video_id
     SEGMENTATION_MASKS[video_id] = results.pop("segmentation_masks", {})
     results["video_url"] = f"/api/videos/{video_id}/file"
-    if results["overlay"]["status"] == "available":
+    source_path = Path(results["video"]["path"])
+    pose_artifact = source_path.with_name(f"{source_path.stem}.pose.mp4")
+    segmentation_artifact = source_path.with_name(f"{source_path.stem}.segmentation.mp4")
+    if (
+        results["processed_video"]["status"] == "completed"
+        and pose_artifact.is_file()
+        and pose_artifact.stat().st_size > 0
+    ):
         results["overlay"]["url"] = f"/api/videos/{video_id}/processed"
-    if results["processed_video"]["status"] == "completed":
         results["processed_video"]["url"] = f"/api/videos/{video_id}/processed"
-    if results["segmentation_video"]["status"] == "completed":
+    elif results["processed_video"]["status"] == "completed":
+        results["processed_video"].update(
+            status="failed", reason="Validated pose video artifact is missing or empty."
+        )
+        results["overlay"].update(status="failed", url=None)
+    if (
+        results["segmentation_video"]["status"] == "completed"
+        and segmentation_artifact.is_file()
+        and segmentation_artifact.stat().st_size > 0
+    ):
         results["segmentation_video"]["url"] = f"/api/videos/{video_id}/segmentation"
         results["segmentation"]["overlay_url"] = results["segmentation_video"]["url"]
+    elif results["segmentation_video"]["status"] == "completed":
+        results["segmentation_video"].update(
+            status="failed", reason="Validated segmentation video artifact is missing or empty."
+        )
     RESULTS[video_id] = results
     return results
 

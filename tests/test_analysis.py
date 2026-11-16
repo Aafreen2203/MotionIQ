@@ -1,5 +1,6 @@
 import builtins
 
+import cv2
 import numpy as np
 import pytest
 
@@ -92,6 +93,42 @@ def test_analysis_samples_timestamps_artifacts_and_measurements(tmp_path, monkey
     assert result["evaluation"]["status"] == "not_evaluated"
     assert (tmp_path / "source.pose.mp4").stat().st_size > 0
     assert (tmp_path / "source.segmentation.mp4").stat().st_size > 0
+    for name in ("pose", "segmentation"):
+        artifact = tmp_path / f"source.{name}.mp4"
+        capture = cv2.VideoCapture(str(artifact))
+        assert capture.isOpened()
+        assert (
+            int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        ) == (320, 240)
+        fourcc = int(capture.get(cv2.CAP_PROP_FOURCC))
+        assert "".join(chr((fourcc >> (8 * i)) & 0xFF) for i in range(4)).lower() in {
+            "avc1",
+            "h264",
+        }
+        decoded = []
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            decoded.append(frame)
+        capture.release()
+        assert len(decoded) == 4
+    source_frame = cv2.VideoCapture(str(video))
+    _, first_source_frame = source_frame.read()
+    source_frame.release()
+    pose_capture = cv2.VideoCapture(str(tmp_path / "source.pose.mp4"))
+    _, first_pose_frame = pose_capture.read()
+    pose_capture.release()
+    seg_capture = cv2.VideoCapture(str(tmp_path / "source.segmentation.mp4"))
+    _, first_seg_frame = seg_capture.read()
+    seg_capture.release()
+    assert np.mean(cv2.absdiff(first_pose_frame, first_source_frame)) > 1.0
+    assert np.mean(cv2.absdiff(first_seg_frame, first_source_frame)) > 1.0
+    green_edges = (first_pose_frame[:, :, 1] > first_pose_frame[:, :, 0] + 25) & (
+        first_pose_frame[:, :, 1] > first_pose_frame[:, :, 2] + 10
+    )
+    assert green_edges.sum() > 25
 
 
 def test_missing_model_assets_report_not_configured(tmp_path, monkeypatch):

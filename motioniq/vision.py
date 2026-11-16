@@ -191,11 +191,21 @@ def blend_mask(frame: np.ndarray, mask: np.ndarray, threshold: float = 0.5) -> n
 def draw_pose(frame: np.ndarray, landmarks: list[dict[str, float]]) -> np.ndarray:
     output = frame.copy()
     height, width = output.shape[:2]
-    points = [(int(point["x"] * width), int(point["y"] * height)) for point in landmarks]
+    points = []
+    visible = []
+    for point in landmarks:
+        try:
+            x, y = float(point["x"]), float(point["y"])
+            confidence = float(point.get("visibility", 0))
+            valid = np.isfinite([x, y, confidence]).all() and 0 <= x <= 1 and 0 <= y <= 1
+        except (KeyError, TypeError, ValueError):
+            x, y, valid, confidence = 0.0, 0.0, False, 0.0
+        points.append((int(x * (width - 1)), int(y * (height - 1))))
+        visible.append(valid and confidence >= 0.25)
     for first, second in POSE_CONNECTIONS:
-        if first < len(points) and second < len(points):
-            cv2.line(output, points[first], points[second], (45, 210, 150), 2, cv2.LINE_AA)
-    for point, landmark in zip(points, landmarks):
-        if landmark.get("visibility", 0) >= 0.25:
-            cv2.circle(output, point, 3, (245, 190, 80), -1, cv2.LINE_AA)
+        if first < len(points) and second < len(points) and visible[first] and visible[second]:
+            cv2.line(output, points[first], points[second], (45, 210, 150), 3, cv2.LINE_AA)
+    for point, is_visible in zip(points, visible):
+        if is_visible:
+            cv2.circle(output, point, 5, (245, 190, 80), -1, cv2.LINE_AA)
     return output

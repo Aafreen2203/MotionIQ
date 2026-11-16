@@ -25,6 +25,47 @@ _L = {
     "right_ankle": 16,
 }
 MIN_LANDMARK_CONFIDENCE = 0.25
+VIDEO_CODEC = "avc1"
+
+
+def _validate_video_artifact(
+    path: Path, expected_frames: int, width: int, height: int
+) -> tuple[bool, str | None]:
+    """Decode the finished MP4 before exposing it as a completed artifact."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return False, "Video encoder produced no output file."
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        capture.release()
+        return False, "Generated video cannot be opened for decoding."
+    decoded = 0
+    try:
+        actual_width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        while True:
+            ok, _ = capture.read()
+            if not ok:
+                break
+            decoded += 1
+        fourcc = int(capture.get(cv2.CAP_PROP_FOURCC))
+    finally:
+        capture.release()
+    codec = "".join(chr((fourcc >> (8 * i)) & 0xFF) for i in range(4))
+    if (actual_width, actual_height) != (width, height):
+        return (
+            False,
+            "Generated video resolution is "
+            f"{actual_width}x{actual_height}, expected {width}x{height}.",
+        )
+    if decoded != expected_frames:
+        return False, f"Generated video decoded {decoded}/{expected_frames} frames."
+    if codec.lower() not in {"avc1", "h264"}:
+        return (
+            False,
+            f"Generated video codec is {codec!r}; "
+            f"expected browser-compatible H.264 ({VIDEO_CODEC}).",
+        )
+    return True, None
 
 
 def _measure(
@@ -221,6 +262,7 @@ def analyze_video(
     pose_path = path.with_name(f"{path.stem}.pose.mp4")
     segmentation_path = path.with_name(f"{path.stem}.segmentation.mp4")
     pose_writer = segmentation_writer = None
+    pose_encoder_open = segmentation_encoder_open = False
     poses: list[dict[str, object]] = []
     segmentation_masks: dict[str, np.ndarray] = {}
     pose = PoseEstimator()
@@ -246,16 +288,18 @@ def analyze_video(
                 if pose_writer is None:
                     pose_writer = cv2.VideoWriter(
                         str(pose_path),
-                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        cv2.VideoWriter_fourcc(*VIDEO_CODEC),
                         effective_sample_fps,
                         (w, h),
                     )
                     segmentation_writer = cv2.VideoWriter(
                         str(segmentation_path),
-                        cv2.VideoWriter_fourcc(*"mp4v"),
+                        cv2.VideoWriter_fourcc(*VIDEO_CODEC),
                         effective_sample_fps,
                         (w, h),
                     )
+                    pose_encoder_open = pose_writer.isOpened()
+                    segmentation_encoder_open = segmentation_writer.isOpened()
                 if pose_status == "completed":
                     try:
                         pose_result = pose.process(frame, int(timestamp * 1000))
@@ -273,7 +317,8 @@ def analyze_video(
                     }
                 pose_result.update({"frame": index, "timestamp_seconds": timestamp})
                 poses.append(pose_result)
-                pose_writer.write(draw_pose(frame, pose_result.get("landmarks", [])))
+                if pose_writer.isOpened():
+                    pose_writer.write(draw_pose(frame, pose_result.get("landmarks", [])))
                 if segment_status != "failed":
                     try:
                         seg_result = segmenter.process(frame)
@@ -281,7 +326,11 @@ def analyze_video(
                             segment_status = seg_result["status"]
                             segment_reason = seg_result.get("reason")
                         elif segment_status == "completed":
-                            segmentation_writer.write(blend_mask(frame, seg_result["mask"]))
+                            if segmentation_writer.isOpened():
+                                segmentation_writer.write(blend_mask(frame, seg_result["mask"]))
+                            else:
+                                segment_status = "failed"
+                                segment_reason = "H.264 segmentation video encoder could not open."
                             segmentation_detected_frames += int(seg_result.get("mask_count", 0) > 0)
                             segmentation_masks[str(index)] = seg_result.get(
                                 "evaluation_mask", (seg_result["mask"] >= 0.5).astype(np.uint8)
@@ -298,12 +347,23 @@ def analyze_video(
             pose_writer.release()
         if segmentation_writer is not None:
             segmentation_writer.release()
-    pose_available = pose_status == "completed" and bool(
-        pose_path.is_file() and pose_path.stat().st_size
+    video_width, video_height = int(metadata["width"]), int(metadata["height"])
+    pose_artifact_ok, pose_artifact_reason = (
+        _validate_video_artifact(pose_path, len(poses), video_width, video_height)
+        if poses and pose_encoder_open
+        else (False, "H.264 pose video encoder could not open.")
     )
-    seg_available = segment_status == "completed" and bool(
-        segmentation_path.is_file() and segmentation_path.stat().st_size
+    seg_artifact_ok, seg_artifact_reason = (
+        _validate_video_artifact(segmentation_path, len(poses), video_width, video_height)
+        if poses and segmentation_encoder_open
+        else (False, "H.264 segmentation video encoder could not open.")
     )
+    pose_available = pose_status == "completed" and pose_artifact_ok
+    seg_available = segment_status == "completed" and seg_artifact_ok
+    if pose_status == "completed" and not pose_available:
+        pose_reason = pose_artifact_reason
+    if segment_status == "completed" and not seg_available:
+        segment_reason = seg_artifact_reason
     measurements = _measure(
         poses, float(metadata["duration_seconds"]), int(metadata["width"]), int(metadata["height"])
     )
@@ -344,10 +404,14 @@ def analyze_video(
         "processed_video": {
             "status": "completed" if pose_available else pose_status,
             "url": None,
+            "reason": pose_reason,
+            "codec": VIDEO_CODEC if pose_available else None,
         },
         "segmentation_video": {
             "status": "completed" if seg_available else segment_status,
             "url": None,
+            "reason": segment_reason,
+            "codec": VIDEO_CODEC if seg_available else None,
         },
         "movement_measurements": measurements,
         "prediction": {
