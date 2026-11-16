@@ -1,8 +1,8 @@
 # MotionIQ
 
-MotionIQ is a research software prototype for video-based human movement analysis. It provides reproducible video ingestion, optional MediaPipe pose estimation and YOLO segmentation adapters, geometric movement features, lightweight classification baselines, a FastAPI service, and a React dashboard.
+MotionIQ is a research software prototype for video-based human movement analysis. It provides local video ingestion, optional Ultralytics YOLO11 pose and person-segmentation inference, image-space movement features, trainable classification baselines, a FastAPI service, and a React dashboard.
 
-**Research status:** outputs depend on optional model packages and weights. Pose estimates are not validated against a dataset in this repository. Movement measurements requiring calibration, predictions, and evaluation remain explicitly unavailable until configured. This is not a clinical tool.
+**Research status:** pose and segmentation use pretrained COCO YOLO11n models when installed and downloaded. These outputs have not been validated against a MotionIQ dataset. Prediction remains unconfigured until a trained checkpoint and class map are supplied; evaluation remains not evaluated until ground-truth annotations are supplied. Reported joint angles and normalized image displacements are uncalibrated 2D projections, not physical or clinical measurements.
 
 ## Quick start
 
@@ -23,7 +23,9 @@ npm install
 npm run dev
 ```
 
-The dashboard is at http://localhost:5173 and API docs at http://localhost:8000/docs. Install optional vision dependencies with `python -m pip install -e '.[vision]'`. Place compatible YOLO segmentation weights at `models/yolo11n-seg.pt` to enable segmentation; the application does not download model weights automatically.
+The dashboard is at http://localhost:5175 and API docs at http://localhost:8000/docs. The frontend calls the configurable FastAPI origin directly; CORS allows the local development origins. Install CPU inference dependencies with `python -m pip install -e '.[vision]'`, then download checksum-verified YOLO11n COCO pose and segmentation weights with `python -m motioniq.download_models`.
+
+Set `MOTIONIQ_SAMPLE_FPS` to change analysis sampling (default `3`). After upload, ground-truth COCO-17 pose landmarks can be submitted to `POST /api/videos/{video_id}/evaluation/pose` as JSON `{"frames":[{"frame":0,"landmarks":[[x,y], ...]}]}`. Coordinates must be normalized to `[0,1]`, match the predicted 17-keypoint order, and correspond to sampled source frame indices. That route computes MPJPE and PCK@0.05 only on annotated frames with a detected pose. Binary person masks can be posted to `/api/videos/{video_id}/evaluation/segmentation` as `{"frames":[{"frame":0,"mask":[[0,1,...], ...]}]}` using one row per image pixel; it reports mean IoU and Dice. Classification precision/recall/F1 and confusion matrix are available in the metrics module but cannot be surfaced until a trained checkpoint and class predictions exist.
 
 ## CLI
 
@@ -43,7 +45,7 @@ python -c 'from motioniq.video import create_synthetic_video; create_synthetic_v
 
 - `motioniq/`: ingestion, geometry, metrics, model and service modules
 - `frontend/`: React + TypeScript dashboard
-- `tests/`: geometry, video and baseline smoke coverage
+- `tests/`: geometry, sampled analysis/artifacts, API/CORS, annotation metrics, and baseline coverage
 - `data/`: ignored location for user-downloaded datasets
 - `models/`: ignored location for trained weights
 

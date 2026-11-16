@@ -4,7 +4,7 @@ Version: 0.1.0
 Summary: Research infrastructure for video-based movement analysis
 Requires-Python: <3.13,>=3.11
 Requires-Dist: numpy==1.26.4
-Requires-Dist: opencv-python-headless==4.10.0.84
+Requires-Dist: opencv-python==4.11.0.86
 Requires-Dist: pandas==2.2.3
 Requires-Dist: scipy==1.14.1
 Requires-Dist: scikit-learn==1.5.2
@@ -12,8 +12,8 @@ Requires-Dist: fastapi==0.115.5
 Requires-Dist: uvicorn[standard]==0.32.1
 Requires-Dist: python-multipart==0.0.17
 Provides-Extra: vision
-Requires-Dist: mediapipe==0.10.18; extra == "vision"
 Requires-Dist: ultralytics==8.3.40; extra == "vision"
+Requires-Dist: torch==2.5.1; extra == "vision"
 Provides-Extra: training
 Requires-Dist: torch==2.5.1; extra == "training"
 Provides-Extra: dev

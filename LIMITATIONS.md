@@ -1,11 +1,11 @@
 # Limitations
 
-- This is research infrastructure, not a clinically validated measurement or diagnosis system.
-- No real dataset or trained checkpoint is included. Current environment could not resolve the user-specified UI-PRMD Zenodo URL; available datasets are large, and REHAB24-6 has restrictive academic/non-commercial terms.
-- MediaPipe pose and Ultralytics segmentation are optional. Inference quality is unmeasured here. YOLO requires a pre-provisioned `models/yolo11n-seg.pt` file. In this headless macOS environment, MediaPipe 0.10.18 could not initialize its OpenGL context (`NSOpenGLPixelFormat`); the API reports pose as unavailable instead of failing the upload.
-- The dashboard can display a pose/segmentation overlay image for the first sampled frame when optional model outputs are available; it does not generate an overlaid full-length video. CSV contains normalized model landmarks, not clinical angles. Segmentation masks are represented only through the preview image.
-- Joint angles and trunk orientation are 2D geometry unless a calibrated 3D source is supplied; perspective, occlusion, camera placement, clothing, and image quality can change results.
-- Repetition detection is a simple peak detector and needs movement-specific tuning. Symmetry is a bounded descriptive score, not a normative measure.
-- FastAPI stores results in memory, has no authentication or upload-size cap, and is intended for trusted local use only.
-- Frontend development currently expects API CORS to be allowed by a same-origin proxy or browser configuration; production deployment should configure explicit CORS and secure storage.
-- Python support is pinned to 3.11/3.12 due package compatibility; Python 3.14 is outside the declared support range.
+- This is research software, not a clinically validated measurement or diagnosis system. The included pretrained YOLO11n models were smoke-tested but have not been evaluated against a MotionIQ dataset.
+- Pose is COCO-17. It does not include toe/foot landmarks, so this implementation does not compute ankle angles. 2D knee/hip angles and trunk inclination depend on viewpoint, occlusion, pose confidence and perspective.
+- Displacements are pixel or normalized-image values, not calibrated physical distances. Symmetry is a descriptive normalized trajectory comparison, not a normative score.
+- Repetition counting is unconfigured because supported exercises and movement-specific thresholds are not defined. No movement classification checkpoint or class mapping is present, so prediction is explicitly `not_configured`.
+- Evaluation requires matching annotations. API routes compute pose MPJPE/PCK and segmentation IoU/Dice when corresponding ground truth is submitted. Classification precision, recall, F1 and confusion matrix helpers exist but there are no model predictions to evaluate.
+- Segmentation is COCO person-class instance segmentation, not a medical or fine-boundary segmenter. Evaluation masks are compared at the model's lower output resolution after nearest-neighbor ground-truth resizing.
+- Analysis samples up to 300 frames at 3 FPS by default. Longer videos may be truncated; the response and dashboard report this. Processing is synchronous and can take time on CPU.
+- FastAPI keeps result records and segmentation evaluation masks in memory, has no authentication or upload-size limit, and is intended for trusted local use. Restarting the API clears result lookup and annotation evaluation state.
+- Python support is pinned to 3.11/3.12. GPU model training is optional and requires labeled data; the local inference pipeline runs on CPU.

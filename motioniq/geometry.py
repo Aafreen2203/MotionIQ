@@ -6,8 +6,13 @@ import numpy as np
 
 
 def joint_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """Return angle ABC in degrees, or NaN for degenerate geometry."""
-    a, b, c = (np.asarray(point, dtype=float) for point in (a, b, c))
+    """Return internal angle ABC in degrees, or NaN for invalid/degenerate 2D points."""
+    try:
+        a, b, c = (np.asarray(point, dtype=float) for point in (a, b, c))
+    except (TypeError, ValueError):
+        return float("nan")
+    if any(point.shape != (2,) or not np.isfinite(point).all() for point in (a, b, c)):
+        return float("nan")
     first, second = a - b, c - b
     denominator = np.linalg.norm(first) * np.linalg.norm(second)
     if denominator <= np.finfo(float).eps:
@@ -16,9 +21,33 @@ def joint_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
     return float(np.degrees(np.arccos(cosine)))
 
 
+def knee_flexion(internal_angle: float) -> float:
+    """Return flexion magnitude as 180° minus the internal knee angle."""
+    try:
+        angle = float(internal_angle)
+    except (TypeError, ValueError):
+        return float("nan")
+    if not np.isfinite(angle) or not 0 <= angle <= 180:
+        return float("nan")
+    return 180.0 - angle
+
+
 def trunk_inclination(shoulder_mid: np.ndarray, hip_mid: np.ndarray) -> float:
-    """Angle in degrees from vertical, positive to the subject's right."""
-    delta = np.asarray(shoulder_mid, dtype=float) - np.asarray(hip_mid, dtype=float)
+    """Image-plane trunk angle from vertical; positive toward image-right.
+
+    Points use pixel coordinates (x right, y down). This sign describes the image,
+    not anatomical forward/backward lean, which requires a known sagittal camera view.
+    """
+    try:
+        shoulder_mid = np.asarray(shoulder_mid, dtype=float)
+        hip_mid = np.asarray(hip_mid, dtype=float)
+    except (TypeError, ValueError):
+        return float("nan")
+    if any(
+        point.shape != (2,) or not np.isfinite(point).all() for point in (shoulder_mid, hip_mid)
+    ):
+        return float("nan")
+    delta = shoulder_mid - hip_mid
     if np.linalg.norm(delta) <= np.finfo(float).eps:
         return float("nan")
     return float(np.degrees(np.arctan2(delta[0], -delta[1])))
@@ -33,13 +62,22 @@ def landmark_displacement(points: np.ndarray) -> np.ndarray:
 
 
 def movement_symmetry(left: np.ndarray, right: np.ndarray) -> float:
-    """Bounded symmetry score in [0, 1] from paired trajectory magnitudes."""
+    """Bounded paired-motion similarity score in [0, 1].
+
+    Score = 1 - mean(|left-right|) / mean(|left|+|right|). Inputs must be
+    corresponding finite signed movement values. This is a coefficient, not a percent.
+    """
     left, right = np.asarray(left, dtype=float), np.asarray(right, dtype=float)
-    if left.shape != right.shape or left.size == 0:
+    if (
+        left.shape != right.shape
+        or left.size == 0
+        or not np.isfinite(left).all()
+        or not np.isfinite(right).all()
+    ):
         return float("nan")
     denominator = np.mean(np.abs(left) + np.abs(right))
     if denominator <= np.finfo(float).eps:
-        return 1.0
+        return float("nan")
     return float(np.clip(1.0 - np.mean(np.abs(left - right)) / denominator, 0.0, 1.0))
 
 

@@ -9,17 +9,20 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
-python -m pip install -e '.[vision]' # optional; MediaPipe and Ultralytics
-python -m pip install -e '.[training]' # optional; PyTorch
+python -m pip install -e '.[vision]' # optional; PyTorch CPU and Ultralytics inference runtime
+python -m pip install -e '.[training]' # optional; PyTorch model-training tools
+python -m motioniq.download_models # downloads checksum-verified YOLO11n pose/seg weights (~12 MB)
 ```
 
-For controlled reproducibility, generate and commit a platform-specific lock file after resolving packages on the target platform. Obtain YOLO segmentation weights from an authorized source, place them at `models/yolo11n-seg.pt`, and keep model artifacts outside Git. The vision extra is optional because MediaPipe wheel/runtime support varies by platform and display/GPU environment.
+For controlled reproducibility, generate and commit a platform-specific lock file after resolving packages on the target platform. Downloaded model artifacts stay under ignored `models/`. Inference uses pinned Ultralytics 8.3.40, PyTorch 2.5.1 and the official Ultralytics assets release v8.3.0 `yolo11n-pose.pt` (COCO 17 keypoints) and `yolo11n-seg.pt` (COCO person class), on CPU by default. The small/nano models favor local execution speed; they are not MotionIQ-trained or validated. Google Colab GPU training remains available through the optional `training` extra and `motioniq.models` training functions; no model is trained automatically.
+
+The pose model provides 17 COCO landmarks. Therefore ankle angles that need foot/toe landmarks are reported as unavailable. Knee and hip angles are the 2D angle ABC at knee/hip using normalized image-plane coordinates. Trunk inclination is the signed shoulder-midpoint-to-hip-midpoint angle from image vertical. Symmetry compares left/right normalized vertical hip-to-ankle changes between detected samples. These are image-space descriptors; physical distances and clinical biomechanics require calibration and validation. Repetition counting remains unconfigured because no task-specific signal and thresholds are defined.
 
 ## Start services
 
 Backend: `uvicorn motioniq.api:app --reload` (default port 8000).
 
-Frontend: `cd frontend && npm install && npm run dev` (port 5173). For a remote API set `VITE_API_URL` before starting Vite and configure API CORS for the dashboard origin.
+Frontend: `cd frontend && npm install && npm run dev` (port 5175). By default it calls `http://localhost:8000` directly. For a remote API set `VITE_API_URL` before starting Vite and add the dashboard origin to `MOTIONIQ_CORS_ORIGINS`.
 
 ## Quality checks
 
