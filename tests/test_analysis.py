@@ -131,6 +131,21 @@ def test_analysis_samples_timestamps_artifacts_and_measurements(tmp_path, monkey
     assert green_edges.sum() > 25
 
 
+def test_analysis_can_extract_training_features_without_writing_processed_videos(
+    tmp_path, monkeypatch
+):
+    video = create_synthetic_video(tmp_path / "training-source.mp4", frames=12, fps=12)
+    monkeypatch.setattr(analysis, "PoseEstimator", FakePose)
+    monkeypatch.setattr(analysis, "HumanSegmenter", FakeSegmenter)
+    result = analysis.analyze_video(video, sample_fps=2, write_artifacts=False)
+    assert result["pose"]["status"] == "completed"
+    assert result["segmentation"]["status"] == "completed"
+    assert result["processed_video"]["status"] == "not_generated"
+    assert result["segmentation_video"]["status"] == "not_generated"
+    assert not (tmp_path / "training-source.pose.mp4").exists()
+    assert not (tmp_path / "training-source.segmentation.mp4").exists()
+
+
 def test_missing_model_assets_report_not_configured(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     pose = PoseEstimator(model_path="missing.pt")

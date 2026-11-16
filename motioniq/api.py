@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import uuid
@@ -15,6 +16,7 @@ from fastapi.responses import FileResponse
 
 from motioniq.analysis import analyze_video, export_measurements_csv
 from motioniq.metrics import mpjpe, pck, segmentation_scores
+from motioniq.models import load_classifier_bundle, predict_classifier_bundle, sequence_features
 from motioniq.video import inspect_video
 
 api = FastAPI(title="MotionIQ", version="0.1.0")
@@ -22,11 +24,69 @@ UPLOAD_DIR = Path("uploads")
 RESULTS: dict[str, dict[str, object]] = {}
 SEGMENTATION_MASKS: dict[str, dict[str, np.ndarray]] = {}
 ALLOWED = {".mp4", ".mov", ".avi", ".mkv"}
+MODEL_CHECKPOINT = Path(os.getenv("MOTIONIQ_MODEL_PATH", "models/motioniq-rf.joblib"))
+CLASSIFIER_BUNDLE: dict[str, object] | None = None
+CLASSIFIER_LOAD_ERROR: str | None = None
+if MODEL_CHECKPOINT.is_file():
+    try:
+        CLASSIFIER_BUNDLE = load_classifier_bundle(MODEL_CHECKPOINT)
+    except Exception as error:  # A corrupt or incompatible checkpoint must be visible in status.
+        CLASSIFIER_LOAD_ERROR = str(error)
+CLASSIFIER_MTIME = MODEL_CHECKPOINT.stat().st_mtime if CLASSIFIER_BUNDLE is not None else None
 
 
 @api.get("/health")
 def health():
     return {"status": "ok", "service": "motioniq"}
+
+
+def classifier_status() -> dict[str, object]:
+    global CLASSIFIER_BUNDLE, CLASSIFIER_LOAD_ERROR, CLASSIFIER_MTIME
+    status_path = MODEL_CHECKPOINT.with_suffix(".status.json")
+    training_status = {}
+    if status_path.is_file():
+        try:
+            training_status = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            training_status = {}
+    if training_status.get("status") == "training":
+        return {"status": "training", "checkpoint": str(MODEL_CHECKPOINT)}
+    checkpoint_mtime = MODEL_CHECKPOINT.stat().st_mtime if MODEL_CHECKPOINT.is_file() else None
+    if checkpoint_mtime is not None and checkpoint_mtime != CLASSIFIER_MTIME:
+        try:
+            CLASSIFIER_BUNDLE = load_classifier_bundle(MODEL_CHECKPOINT)
+            CLASSIFIER_LOAD_ERROR = None
+            CLASSIFIER_MTIME = checkpoint_mtime
+        except Exception as error:
+            CLASSIFIER_BUNDLE = None
+            CLASSIFIER_LOAD_ERROR = str(error)
+            CLASSIFIER_MTIME = checkpoint_mtime
+    if CLASSIFIER_BUNDLE is None and training_status.get("status") == "failed":
+        CLASSIFIER_LOAD_ERROR = str(training_status.get("reason", "Training failed"))
+    if CLASSIFIER_BUNDLE is None:
+        return {
+            "status": "failed" if CLASSIFIER_LOAD_ERROR else "not_configured",
+            "reason": CLASSIFIER_LOAD_ERROR or f"No trained checkpoint at {MODEL_CHECKPOINT}.",
+            "checkpoint": str(MODEL_CHECKPOINT),
+        }
+    metadata = CLASSIFIER_BUNDLE.get("metadata", {})
+    return {
+        "status": "ready",
+        "model_version": CLASSIFIER_BUNDLE["model_version"],
+        "class_labels": CLASSIFIER_BUNDLE["class_labels"],
+        "feature_schema_version": CLASSIFIER_BUNDLE["feature_schema_version"],
+        "checkpoint": str(MODEL_CHECKPOINT),
+        "evaluation": metadata.get("held_out_test_metrics"),
+        "training_metadata": metadata,
+        "last_training_failure": (
+            training_status.get("reason") if training_status.get("status") == "failed" else None
+        ),
+    }
+
+
+@api.get("/api/model/status")
+def get_model_status():
+    return classifier_status()
 
 
 @api.get("/api/videos")
@@ -80,6 +140,32 @@ async def upload_video(file: UploadFile = File(...)):
         path.unlink(missing_ok=True)
         raise HTTPException(422, f"Invalid video: {error}") from error
     results["video_id"] = video_id
+    if CLASSIFIER_BUNDLE is not None:
+        measurements = results.get("movement_measurements", {})
+        rows = measurements.get("frames", []) if isinstance(measurements, dict) else []
+        if rows:
+            features = sequence_features(
+                rows, int(results["video"]["width"]), int(results["video"]["height"])
+            )
+            threshold = float(
+                CLASSIFIER_BUNDLE.get("metadata", {}).get("confidence_threshold", 0.55)
+            )
+            results["prediction"] = predict_classifier_bundle(
+                CLASSIFIER_BUNDLE, features, confidence_threshold=threshold
+            )
+        else:
+            results["prediction"] = {
+                "status": "failed",
+                "reason": "No movement measurement frames are available for inference.",
+                "model_version": CLASSIFIER_BUNDLE["model_version"],
+            }
+    metrics = classifier_status().get("evaluation")
+    if isinstance(metrics, dict):
+        results["evaluation"] = {
+            "status": "completed",
+            "tasks": {"classification": metrics},
+            "reason": None,
+        }
     SEGMENTATION_MASKS[video_id] = results.pop("segmentation_masks", {})
     results["video_url"] = f"/api/videos/{video_id}/file"
     source_path = Path(results["video"]["path"])

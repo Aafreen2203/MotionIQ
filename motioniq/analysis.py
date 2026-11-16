@@ -154,21 +154,19 @@ def _measure(
             hip_point = points[f"{side}_hip"]
             row[f"{side}_hip_pixel_x"] = float(hip_point[0][0]) if hip_point else None
             row[f"{side}_hip_pixel_y"] = float(hip_point[0][1]) if hip_point else None
-        if rows:
-            previous = row_points[-1]
-            previous_left, current_left = previous.get("left_hip"), points["left_hip"]
-            if previous_left is not None and current_left is not None:
-                delta = current_left[0] - previous_left[0]
-                row["left_hip_displacement_pixels"] = float(np.linalg.norm(delta))
-                row["left_hip_displacement_normalized"] = float(
+        for side in ("left", "right"):
+            key = f"{side}_hip"
+            previous_hip = row_points[-1].get(key) if rows else None
+            current_hip = points[key]
+            if previous_hip is not None and current_hip is not None:
+                delta = current_hip[0] - previous_hip[0]
+                row[f"{side}_hip_displacement_pixels"] = float(np.linalg.norm(delta))
+                row[f"{side}_hip_displacement_normalized"] = float(
                     np.linalg.norm([delta[0] / width, delta[1] / height])
                 )
             else:
-                row["left_hip_displacement_pixels"] = None
-                row["left_hip_displacement_normalized"] = None
-        else:
-            row["left_hip_displacement_pixels"] = None
-            row["left_hip_displacement_normalized"] = None
+                row[f"{side}_hip_displacement_pixels"] = None
+                row[f"{side}_hip_displacement_normalized"] = None
         rows.append(row)
         row_points.append(points)
 
@@ -246,7 +244,12 @@ def _measure(
 
 
 def analyze_video(
-    path: str | Path, *, sample_fps: float | None = None, max_frames: int = 300
+    path: str | Path,
+    *,
+    sample_fps: float | None = None,
+    max_frames: int = 300,
+    artifact_dir: str | Path | None = None,
+    write_artifacts: bool = True,
 ) -> dict[str, object]:
     if sample_fps is None:
         sample_fps = float(os.getenv("MOTIONIQ_SAMPLE_FPS", "3"))
@@ -259,8 +262,11 @@ def analyze_video(
         raise ValueError(f"Cannot open video: {path}")
     effective_sample_fps = min(sample_fps, float(metadata["fps"]))
     interval = 1.0 / effective_sample_fps
-    pose_path = path.with_name(f"{path.stem}.pose.mp4")
-    segmentation_path = path.with_name(f"{path.stem}.segmentation.mp4")
+    artifact_dir = Path(artifact_dir) if artifact_dir is not None else path.parent
+    if write_artifacts:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+    pose_path = artifact_dir / f"{path.stem}.pose.mp4"
+    segmentation_path = artifact_dir / f"{path.stem}.segmentation.mp4"
     pose_writer = segmentation_writer = None
     pose_encoder_open = segmentation_encoder_open = False
     poses: list[dict[str, object]] = []
@@ -285,7 +291,7 @@ def analyze_video(
                 timestamp = index / float(metadata["fps"])
             if timestamp + 1e-6 >= next_sample:
                 h, w = frame.shape[:2]
-                if pose_writer is None:
+                if write_artifacts and pose_writer is None:
                     pose_writer = cv2.VideoWriter(
                         str(pose_path),
                         cv2.VideoWriter_fourcc(*VIDEO_CODEC),
@@ -317,7 +323,7 @@ def analyze_video(
                     }
                 pose_result.update({"frame": index, "timestamp_seconds": timestamp})
                 poses.append(pose_result)
-                if pose_writer.isOpened():
+                if pose_writer is not None and pose_writer.isOpened():
                     pose_writer.write(draw_pose(frame, pose_result.get("landmarks", [])))
                 if segment_status != "failed":
                     try:
@@ -326,7 +332,9 @@ def analyze_video(
                             segment_status = seg_result["status"]
                             segment_reason = seg_result.get("reason")
                         elif segment_status == "completed":
-                            if segmentation_writer.isOpened():
+                            if not write_artifacts:
+                                pass
+                            elif segmentation_writer is not None and segmentation_writer.isOpened():
                                 segmentation_writer.write(blend_mask(frame, seg_result["mask"]))
                             else:
                                 segment_status = "failed"
@@ -350,19 +358,19 @@ def analyze_video(
     video_width, video_height = int(metadata["width"]), int(metadata["height"])
     pose_artifact_ok, pose_artifact_reason = (
         _validate_video_artifact(pose_path, len(poses), video_width, video_height)
-        if poses and pose_encoder_open
+        if write_artifacts and poses and pose_encoder_open
         else (False, "H.264 pose video encoder could not open.")
     )
     seg_artifact_ok, seg_artifact_reason = (
         _validate_video_artifact(segmentation_path, len(poses), video_width, video_height)
-        if poses and segmentation_encoder_open
+        if write_artifacts and poses and segmentation_encoder_open
         else (False, "H.264 segmentation video encoder could not open.")
     )
-    pose_available = pose_status == "completed" and pose_artifact_ok
-    seg_available = segment_status == "completed" and seg_artifact_ok
-    if pose_status == "completed" and not pose_available:
+    pose_available = write_artifacts and pose_status == "completed" and pose_artifact_ok
+    seg_available = write_artifacts and segment_status == "completed" and seg_artifact_ok
+    if write_artifacts and pose_status == "completed" and not pose_available:
         pose_reason = pose_artifact_reason
-    if segment_status == "completed" and not seg_available:
+    if write_artifacts and segment_status == "completed" and not seg_available:
         segment_reason = seg_artifact_reason
     measurements = _measure(
         poses, float(metadata["duration_seconds"]), int(metadata["width"]), int(metadata["height"])
@@ -378,37 +386,51 @@ def analyze_video(
             "timestamps_seconds": [f["timestamp_seconds"] for f in poses],
         },
         "pose": {
-            "status": "completed" if pose_available else pose_status,
+            "status": pose_status,
             "reason": pose_reason,
             "frames": poses,
             "detected_frames": sum(bool(f.get("landmarks")) for f in poses),
-            "model": "Ultralytics YOLO11n-pose COCO-17" if pose_available else None,
+            "model": "Ultralytics YOLO11n-pose COCO-17" if pose_status == "completed" else None,
             "validated": False,
         },
         "segmentation": {
-            "status": "completed"
-            if seg_available
-            else (segment_status if segment_reason else "not_configured"),
+            "status": segment_status if segment_status != "completed" else "completed",
             "reason": segment_reason or segmenter.reason,
-            "model": "Ultralytics YOLO11n-seg COCO person" if seg_available else None,
+            "model": "Ultralytics YOLO11n-seg COCO person"
+            if segment_status == "completed"
+            else None,
             "detected_frames": segmentation_detected_frames,
             "overlay_url": None,
             "validated": False,
         },
         "segmentation_masks": segmentation_masks,
         "overlay": {
-            "status": "available" if pose_available else pose_status,
+            "status": "available"
+            if pose_available
+            else ("not_generated" if not write_artifacts else pose_status),
             "url": None,
             "validated": False,
         },
         "processed_video": {
-            "status": "completed" if pose_available else pose_status,
+            "status": "completed"
+            if pose_available
+            else (
+                "not_generated"
+                if not write_artifacts and pose_status == "completed"
+                else pose_status
+            ),
             "url": None,
             "reason": pose_reason,
             "codec": VIDEO_CODEC if pose_available else None,
         },
         "segmentation_video": {
-            "status": "completed" if seg_available else segment_status,
+            "status": "completed"
+            if seg_available
+            else (
+                "not_generated"
+                if not write_artifacts and segment_status == "completed"
+                else segment_status
+            ),
             "url": None,
             "reason": segment_reason,
             "codec": VIDEO_CODEC if seg_available else None,
